@@ -1,7 +1,7 @@
 #include "os.h"
 #include "simulation_parameters.h"
 void TaskFloat( void *param) {
-    float th = 0.2;
+    float th = 0.13;
     WriteToPort(PUMP_PORT_WRITE, &th, sizeof(float));
 }
 
