@@ -1,10 +1,11 @@
 #include "os.h"
 #include "simulation_parameters.h"
 #include <stdint.h>
+#include <stdio.h>
 
 int milliseconds = 0;
 SENSORS_DATA sensord; 
-GPS_DATA gpsd;
+GPS_DATA gpsData;
 
 void Task_Clock ( void * param )
 {
@@ -23,6 +24,7 @@ void Task_Sensor(void *param) {
     {
         TaskWaitForInterrupt (SENSORS_INTERRUPT_NUMBER) ; 
         ReadFromPort (SENSORS_PORT_READ , (void *) &sensord ,sizeof(SENSORS_DATA));
+        if (sensord.altitude>0) printf("%d: %f %f %f\n", milliseconds, sensord.altitude, gpsData.distance, gpsData.pod_x);
     }
 }
 
@@ -32,7 +34,7 @@ void Task_GPS(void *param) {
     {
         GPS_DATA gps_data_tmp;
         int res = ReadFromPort (GPS_PORT_READ , (void *) &gps_data_tmp ,sizeof(GPS_DATA));
-        if (res == 0) gpsd= gps_data_tmp;
+        if (res == 0) gpsData= gps_data_tmp;
         TaskDelay (freq);
     }
 }
