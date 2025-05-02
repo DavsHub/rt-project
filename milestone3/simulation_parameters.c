@@ -7,7 +7,7 @@ int deterministic = 1;
 int enable_collision = 1;
 
 // Scenario. 1 = Moon; 2 = Mars; 3 = Earth
-int scenario = 1;
+int scenario = 3;
 
 // Pump acceleration in m/s^2 at full throttle
 float pump_acceleration = 20.0f;

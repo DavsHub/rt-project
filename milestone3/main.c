@@ -14,7 +14,7 @@ typedef struct {
     int wait_count;
 } SEMAPHORE;
 
-SEMAPHORE semAltStart, semAltDone, semDriftStart, semDriftDone;
+SEMAPHORE semAltStart, semAltDone, semDriftStart, semDriftDone, semGPSReady;
 int milliseconds = 0;
 SENSORS_DATA sensorData; 
 GPS_DATA gpsData;
@@ -23,10 +23,8 @@ float targetAltitude=70, hoverThrust=-1.;
 int alt_action, drift_action;
 
 void SemaphoreInit(SEMAPHORE *sem, int initial) {
-    TaskSetPreemption(0);
     sem->count = initial;
     sem->wait_count = 0;
-    TaskSetPreemption(1);
 }
 
 void SemaphoreWait(SEMAPHORE *sem) {
@@ -62,9 +60,18 @@ void SemaphoreSignal(SEMAPHORE *sem) {
     TaskSetPreemption(1);
 }
 
+void SemaphoreBroadcast(SEMAPHORE *sem) {
+    TaskSetPreemption(0);
+    for (int i = 0; i < sem->wait_count; ++i) {
+        TaskResume(sem->waiting[i]);
+    }
+    sem->wait_count = 0;
+
+    TaskSetPreemption(1);
+}
 
 void DetectHover() {
-    const float P = 1, D=1.7, M = 0.2, tolu=0.0000001;
+    const float P = 1, D=1.7, M = 0.2, tol=0.0000001;
     const int mc = 100;
     int c=0;
     float u = -1;
@@ -77,7 +84,7 @@ void DetectHover() {
         u_tmp = CLAMP(0, u_tmp, 1);
         //printf("u = %f\n", u_tmp);
         WriteToPort(PUMP_PORT_WRITE, &u_tmp, sizeof(float));
-        if (fabs(u_tmp-u)<tolu && u<1 && u >0) 
+        if (fabs(u_tmp-u)<tol && u<1 && u >0) 
             c++;
         else 
             c = 0;
@@ -92,7 +99,9 @@ void DetectHover() {
 }
 
 void flyToAltitude() {
-    const float P = 1, D=1.7, M = 0.2, tolu=0.000001;
+    const float P = 1, D=1.7, M = 0.2, tol=0.000001;
+    const float u_max = (2*hoverThrust<1)? 2*hoverThrust : 1;
+    const float u_min = (2*hoverThrust<1)? 0 : 2*hoverThrust-1;
     float u=-1;
     while (1) {   
         TaskWaitForInterrupt (SENSORS_INTERRUPT_NUMBER); 
@@ -100,11 +109,11 @@ void flyToAltitude() {
             - sensorData.vertical_speed * D ;
         u *= M;
         u += hoverThrust;
-        u = CLAMP(0, u, 2*hoverThrust);
+        u = CLAMP(u_min, u, u_max);
         
         WriteToPort(PUMP_PORT_WRITE, &u, sizeof(float));
         //printf("%f %f %f\n",sensorData.altitude, sensorData.vertical_speed,u);
-        if (fabs(u-hoverThrust)<tolu) {
+        if (fabs(u-hoverThrust)<tol) {
             printf("Reached altitude = %f\n", targetAltitude);
             SemaphoreSignal(&semAltDone);
             return;
@@ -151,6 +160,49 @@ void boostForward() {
     return;
 }
 
+void flyToMinDist() {
+    const float P =1, M=0.1, tolx = 0.05;
+    float d = 1;
+    WriteToPort(DRIFT_PORT_WRITE, &d, sizeof(float));
+    TaskWaitForInterrupt (DRIFT_INTERRUPT_NUMBER);
+    TaskDelay(2000);
+    d = 0;
+    WriteToPort(DRIFT_PORT_WRITE, &d, sizeof(float));
+
+    GPS_DATA min_gpsData = gpsData;
+    float old_pod_x = gpsData.pod_x;
+    //int old_milliseconds = milliseconds;
+    while(1) {
+        SemaphoreWait(&semGPSReady);
+        //printf("%f %f\n",min_gpsData.distance, gpsData.distance);
+        if (min_gpsData.distance>gpsData.distance) {
+            min_gpsData = gpsData;
+        } else {
+            float deriv = gpsData.pod_x-old_pod_x;
+            float delta = gpsData.pod_x-min_gpsData.pod_x;
+            float d_tmp = 0;
+            //printf("%f %f\n",deriv,gpsData.pod_x-min_gpsData.pod_x);
+            if ((deriv>0)==(delta>0)){
+                d_tmp = -P*delta;
+                d_tmp *= M;
+                d_tmp = CLAMP(-1,d_tmp,1);
+                //printf("%f\n",d_tmp);
+            }
+            
+            if (d_tmp!=d) {
+                d=d_tmp;
+                WriteToPort(DRIFT_PORT_WRITE, &d, sizeof(float));
+            }
+
+            if (fabs(gpsData.pod_x-min_gpsData.pod_x)<tolx && fabs(gpsData.pod_x-old_pod_x)<tolx){
+                SemaphoreSignal(&semDriftDone);
+            }
+        }
+        old_pod_x = gpsData.pod_x;
+        //old_milliseconds = milliseconds;
+    }
+}
+
 void Task_Clock ( void * param )
 {
     UNREFERENCED_PARAMETER ( param )
@@ -180,7 +232,7 @@ void Task_GPS(void *param) {
         int res = ReadFromPort (GPS_PORT_READ , (void *) &gps_data_tmp ,sizeof(GPS_DATA));
         if (res == 0) {
             gpsData= gps_data_tmp;
-            
+            SemaphoreBroadcast(&semGPSReady);
         }
         TaskDelay (delay);
         
@@ -217,10 +269,8 @@ void Task_DriftCtrl(void *param) {
                 boostForward();
                 break;
             case 1:
-                //flyToMinDist();
+                flyToMinDist();
                 break;
-            default:
-                hover();
         }        
     }
     const float K1 = 0.2, K2=1., M = 0.02;
@@ -257,9 +307,13 @@ void Task_Landing_Program(void *param) {
     alt_action = 2;
     SemaphoreSignal(&semAltStart);
     SemaphoreWait(&semAltDone);
-    drift_action=0;
+    drift_action=1;
     SemaphoreSignal(&semDriftStart);
     SemaphoreWait(&semDriftDone);
+    targetAltitude=0;
+    alt_action = 1;
+    SemaphoreSignal(&semAltStart);
+    SemaphoreWait(&semAltDone);
     while(1){
         TaskDelay(100);
         printf("xpos: %f distance:%f\n", gpsData.pod_x, gpsData.distance);
@@ -273,6 +327,7 @@ void InitTask(void *param)
     SemaphoreInit(&semAltStart,0);
     SemaphoreInit(&semDriftDone,0);
     SemaphoreInit(&semDriftStart,0);
+    SemaphoreInit(&semGPSReady,0);
     PTASK task1,task2, task3, task4, task5, task6;
     TaskCreate(&task1, "Clock", 3, 1, 0, Task_Clock, NULL);
     TaskCreate(&task2, "Sensor", 2, 1, 0, Task_Sensor, NULL);
