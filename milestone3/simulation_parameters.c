@@ -1,13 +1,13 @@
 #include "simulation_parameters.h"
 
 // Simulation creation is deterministic (1) or random (0)
-int deterministic = 1;
+int deterministic = 0;
 
 // Enables / disables collision
 int enable_collision = 1;
 
 // Scenario. 1 = Moon; 2 = Mars; 3 = Earth
-int scenario = 3;
+int scenario = 1;
 
 // Pump acceleration in m/s^2 at full throttle
 float pump_acceleration = 20.0f;
